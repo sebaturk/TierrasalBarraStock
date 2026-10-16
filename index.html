@@ -443,6 +443,8 @@
   function fmtDMY(d){ return pad2(d.getDate()) + "/" + pad2(d.getMonth()+1) + "/" + d.getFullYear(); }
   function parseYMD(s){ var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || ""); return m ? new Date(+m[1], +m[2]-1, +m[3]) : null; }
   function fmtDayDate(s){ var d = parseYMD(s); return d ? JS_DAYS[d.getDay()] + " " + fmtDMY(d) : "—"; }
+  function orderDateObj(o){ return parseYMD(o.noteDate) || new Date(o.createdAt); }
+  function orderRequester(o){ return o.requestedBy || shortUser(o.createdBy) || "—"; }
   function nextDeliveryDate(prov){
     var days = (prov && prov.deliveryDays) || [];
     if(!days.length) return "";
@@ -607,6 +609,18 @@
         var d = new Date();
         return "NP-" + String(d.getFullYear()).slice(2) + pad2(d.getMonth()+1) + pad2(d.getDate()) + "-" + pad2(d.getHours()) + pad2(d.getMinutes());
       }
+    },
+
+    async resetOrders(){
+      var db = this._db, ids = this.orders.map(function(o){ return o.id; });
+      for(var i = 0; i < ids.length; i++){ await db.collection("orders").doc(ids[i]).delete(); }
+      await db.collection("meta").doc("counters").set({ orderSeq: 0 }, { merge: true });
+      this.orders = [];
+      var self = this;
+      this.products.filter(function(p){ return p.orderedFolio; }).forEach(function(p){
+        self.updateProduct(p.id, { ordered: false, orderedQty: null, orderedAt: null, orderedBy: null, orderedLabel: null, orderedFolio: null });
+      });
+      this.onChange();
     },
 
     async createOrder(order){
@@ -1132,17 +1146,16 @@
   }
 
   function notaPaperHtml(o){
-    var d = new Date(o.createdAt);
     var hasPrice = o.items.some(function(it){ return it.price != null; });
     var h = '<div class="nota-paper">';
     if(o.status === "anulada") h += '<div class="nota-void">NOTA ANULADA</div>';
     h += '<div class="nota-head"><div><div class="nota-title">Nota de pedido</div><div class="nota-biz">' + esc(BUSINESS_NAME) + '</div></div>' +
-      '<div class="nota-folio">' + esc(o.folio) + '<small>' + fmtDMY(d) + '</small></div></div>';
+      '<div class="nota-folio">' + esc(o.folio) + '<small>' + fmtDMY(orderDateObj(o)) + '</small></div></div>';
     h += '<div class="nota-meta">' +
       '<div><span>Proveedor</span><b>' + esc(o.provider) + '</b></div>' +
-      '<div><span>Entrega esperada</span><b>' + esc(o.deliveryDate ? fmtDayDate(o.deliveryDate) : "A confirmar") + '</b></div>' +
+      '<div><span>Fecha</span><b>' + esc(fmtDayDate(ymd(orderDateObj(o)))) + '</b></div>' +
       '<div><span>Forma de pago</span><b>' + esc(payLabel(o.paymentTerms)) + '</b></div>' +
-      '<div><span>Solicita</span><b>' + esc(shortUser(o.createdBy) || "—") + '</b></div></div>';
+      '<div><span>Solicita</span><b>' + esc(orderRequester(o)) + '</b></div></div>';
     h += '<table class="nota-table"><thead><tr><th>Producto</th><th class="num">Cantidad</th>' +
       (hasPrice ? '<th class="num">P. unit.</th><th class="num">Importe</th>' : '') + '</tr></thead><tbody>';
     o.items.forEach(function(it){
@@ -1163,9 +1176,9 @@
   function orderText(o){
     var L = [];
     L.push("NOTA DE PEDIDO " + o.folio);
-    L.push(BUSINESS_NAME + " · " + fmtDMY(new Date(o.createdAt)));
+    L.push(BUSINESS_NAME + " · " + fmtDMY(orderDateObj(o)));
     L.push("Proveedor: " + o.provider);
-    L.push("Entrega: " + (o.deliveryDate ? fmtDayDate(o.deliveryDate) : "a confirmar"));
+    if(o.deliveryDate) L.push("Entrega: " + fmtDayDate(o.deliveryDate));
     L.push("Pago: " + payLabel(o.paymentTerms));
     L.push("");
     o.items.forEach(function(it, i){
@@ -1179,7 +1192,7 @@
     }
     if(o.paymentTerms === "anticipado") L.push("** PAGO ANTICIPADO **");
     if(o.notes) L.push("Obs: " + o.notes);
-    L.push("Solicita: " + (shortUser(o.createdBy) || "—"));
+    L.push("Solicita: " + orderRequester(o));
     return L.join("\n");
   }
 
@@ -1233,7 +1246,8 @@
     html += '<div class="sheet-title">Nota de pedido</div>';
     html += '<div class="faint" style="font-size:12.5px;margin:-6px 0 14px;">' + esc(prov) + ' · los datos vienen del stock; podés cambiar cantidad, tipo y precio.</div>';
     html += '<div class="field-row"><div class="field"><label>Forma de pago</label><select id="n-terms">' + payOptionsHtml((provData && provData.paymentTerms) || "contraentrega") + '</select></div>' +
-      '<div class="field"><label>Entrega esperada</label><input type="date" id="n-date" value="' + esc(nextDeliveryDate(provData)) + '"></div></div>';
+      '<div class="field"><label>Fecha de la nota</label><input type="date" id="n-date" value="' + ymd(new Date()) + '"></div></div>';
+    html += '<div class="field"><label>Solicita</label><input type="text" id="n-req" maxlength="40" value="' + esc(shortUser(CurrentUser)) + '" placeholder="Nombre de quien pide"></div>';
     html += '<div id="n-lines">' + lines.map(notaLineHtml).join('') + '</div>' + typeDatalist();
     html += '<div class="field"><label>Observaciones (opcional)</label><textarea id="n-notes" rows="2" placeholder="Ej: entregar por la puerta de atrás"></textarea></div>';
     html += '<label class="day-chip" style="margin-bottom:12px;"><input type="checkbox" id="n-mark" checked><span>Marcar estos productos como “En camino”</span></label>';
@@ -1297,9 +1311,11 @@
         itemsOut.forEach(function(it){ if(it.subtotal == null) missing++; else total += it.subtotal; });
         var order = {
           folio: folio, createdAt: iso, createdBy: CurrentUser || null,
+          noteDate: document.getElementById("n-date").value || ymd(new Date()),
+          requestedBy: document.getElementById("n-req").value.trim() || shortUser(CurrentUser),
           provider: prov, providerPhone: (provData && provData.phone) || "",
           paymentTerms: document.getElementById("n-terms").value,
-          deliveryDate: document.getElementById("n-date").value || "",
+          deliveryDate: "",
           notes: document.getElementById("n-notes").value.trim(),
           items: itemsOut, total: round2(total), missingPrices: missing,
           status: "activa", paid: false, paidAt: null, paidBy: null
@@ -1405,18 +1421,19 @@
         return '<button class="chip ' + (f === o[0] ? 'active' : '') + '" data-nfilter="' + o[0] + '">' + o[1] + '</button>';
       }).join('') + '</div>';
 
+    var resetBtn = all.length ? '<div style="text-align:center;margin:26px 0 8px;"><button class="undo-btn" data-reset-notas style="font-size:12.5px;">Borrar todas las notas y reiniciar numeración</button></div>' : '';
     if(list.length === 0){
-      return html + '<div class="empty-note">' + (all.length === 0 ? 'Todavía no hay notas.<br>Armá una desde “Por pedir” con el botón Nota de pedido.' : 'No hay notas en esta vista.') + '</div>';
+      return html + '<div class="empty-note">' + (all.length === 0 ? 'Todavía no hay notas.<br>Armá una desde “Por pedir” con el botón Nota de pedido.' : 'No hay notas en esta vista.') + '</div>' + resetBtn;
     }
     list.forEach(function(o){
       var st = o.status === "anulada" ? ["urgent","Anulada"] : (o.paid ? ["ok","Pagada"] : ["pronto","Por pagar"]);
       var hasPrice = o.items.some(function(it){ return it.price != null; });
       html += '<div class="prov-card" data-open-order="' + esc(o.id) + '"' + (o.status === "anulada" ? ' style="opacity:.55;"' : '') + '>' +
         '<div class="prov-top"><span class="prov-name">' + esc(o.folio) + ' · ' + esc(o.provider) + '</span><span class="badge ' + st[0] + '">' + st[1] + '</span></div>' +
-        '<div class="prov-line">' + fmtDMY(new Date(o.createdAt)) + ' · ' + esc(payLabel(o.paymentTerms)) + (hasPrice ? ' · <b style="color:var(--text);">' + money(o.total) + '</b>' : ' · sin precios') + '</div>' +
+        '<div class="prov-line">' + fmtDMY(orderDateObj(o)) + ' · ' + esc(payLabel(o.paymentTerms)) + (hasPrice ? ' · <b style="color:var(--text);">' + money(o.total) + '</b>' : ' · sin precios') + '</div>' +
         '<div class="prov-line faint">' + o.items.length + ' producto' + (o.items.length === 1 ? '' : 's') + (o.deliveryDate ? ' · entrega ' + esc(fmtDayDate(o.deliveryDate)) : '') + '</div></div>';
     });
-    return html;
+    return html + resetBtn;
   }
 
   function receiveModal(id){
@@ -1647,6 +1664,14 @@
     });
     document.querySelectorAll("[data-nfilter]").forEach(function(btn){
       btn.addEventListener("click", function(){ State.notasFilter = btn.dataset.nfilter; fullRenderWithFab(); });
+    });
+    var rst = document.querySelector("[data-reset-notas]");
+    if(rst) rst.addEventListener("click", async function(){
+      if(!confirm("¿Borrar TODAS las notas de pedido y volver la numeración a NP-0001?\n\nSe pierde el historial de notas (útil para borrar pruebas). Los productos que seguían “En camino” por una nota vuelven a pendientes.")) return;
+      if(!confirm("Última confirmación: esto no se puede deshacer. ¿Continuar?")) return;
+      try { await Store.resetOrders(); showToast("Notas borradas. La próxima será NP-0001"); }
+      catch(e){ console.error(e); showToast("No se pudo reiniciar. Probá de nuevo"); }
+      fullRenderWithFab();
     });
     document.querySelectorAll("[data-open-order]").forEach(function(card){
       card.addEventListener("click", function(){ orderViewModal(card.dataset.openOrder); });
